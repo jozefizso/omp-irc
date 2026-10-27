@@ -4,7 +4,7 @@
   "description": "Agent-to-agent IRC communication and native Ergo server management for oh-my-pi",
   "type": "module",
   "license": "MIT",
-  "files": ["src", "README.md", "LICENSE"],
+  "files": ["src", "skills", "README.md", "LICENSE"],
   "omp": { "extensions": ["./src/index.ts"] },
   "scripts": {
     "check": "tsc --noEmit",
