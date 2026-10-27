@@ -57,7 +57,7 @@ Check state with `/irc status`. Stop the owned server with `/irc server-stop`, o
 /irc join {"port":16668,"nick":"linux-agent","channel":"#work"}
 ```
 
-`/irc host` prints a join command matching its port/channel; run that printed command in the **other** omp instance. `/irc join` also accepts a hostname, or JSON with connection options such as TLS and `passwordEnv`.
+`/irc host` prints a join command matching its port/channel; run that printed command in the **other** omp instance. If a server is already listening on the port, `/irc host` joins it instead of starting another, so running `/irc host` in both instances also works. `/irc join` also accepts a hostname, or JSON with connection options such as TLS and `passwordEnv`.
 
 **Requirements:** automatic setup supports Windows x64, Linux x64, and Linux arm64. It needs internet access on first use. Windows uses its built-in ZIP-capable `System32/tar.exe` explicitly, including when launched from Git Bash; Linux requires `tar` on PATH. No automatic setup is attempted until `/irc host` or the `irc_host` tool is explicitly invoked. Windows x64 and Linux x64 were exercised with fresh downloads; Linux arm64 was not exercised.
 
@@ -164,7 +164,8 @@ Do not assume a DNS nameserver address is the Windows host: DNS tunneling can ma
 
 | Tool | Purpose |
 | --- | --- |
-| `irc_host` | Provision and start a local Ergo server and join this agent; optional `port`, `nick`, `channel`, `wake`. |
+| `irc_host` | Join the local server on the port, or provision and start Ergo and join it; optional `port`, `nick`, `channel`, `wake`. `hosted` reports whether this session owns the server. |
+| `irc_join` | `irc_connect` with local defaults (`127.0.0.1:16667`, `#omp`, unique nickname); any option can be overridden. |
 | `irc_server_start` | Start native Ergo with `binary` and `config` paths. |
 | `irc_server_stop` | Stop this session's owned server. |
 | `irc_connect` | Connect and confirm channel JOIN; takes `host`, `port`, `nick`, `channel`, optional `tls`, `caFile`, `passwordEnv`, `wake`. |
@@ -173,7 +174,7 @@ Do not assume a DNS nameserver address is the Windows host: DNS tunneling can ma
 | `irc_status` | Connection, owned process state, pending inbox count, and overflow count; no connection password. |
 | `irc_disconnect` | Disconnect this client without stopping Ergo. |
 
-One connection and one owned server per extension/session. Inbox capacity: 200 messages, dropping oldest on overflow and reporting `dropped` when drained. Incoming messages also enter context; the inbox limit is not a session-history retention policy. Sending confirms a socket write, **not** peer receipt or execution. No offline replay, acknowledgement protocol, delivery guarantee, automatic reconnect, or SASL/account login is implemented. Reconnect explicitly after network loss. Use unique ASCII nicknames and ordinary `#channels` for Ergo's default identifier policy.
+`irc_host`, `irc_join`, `irc_status`, `irc_connect`, `irc_send`, and `irc_receive` are always in the model's tool list; the remaining tools are discoverable (`xd://` when omp's `tools.xdev` is enabled). One connection and one owned server per extension/session. Inbox capacity: 200 messages, dropping oldest on overflow and reporting `dropped` when drained. Incoming messages also enter context; the inbox limit is not a session-history retention policy. Sending confirms a socket write, **not** peer receipt or execution. No offline replay, acknowledgement protocol, delivery guarantee, automatic reconnect, or SASL/account login is implemented. Reconnect explicitly after network loss. Use unique ASCII nicknames and ordinary `#channels` for Ergo's default identifier policy.
 
 After JOIN, numeric server errors (for example an unknown message destination) do not disconnect the client. `irc_status` exposes the latest as `client.lastServerError` until the next connection. Check this field when a socket write succeeded but the peer did not receive a message.
 
@@ -185,7 +186,7 @@ bun run check
 bun test
 ```
 
-Development dependencies supply omp's actual extension types; they are not shipped or needed at runtime. Protocol tests use isolated local TCP servers; provisioning integrity is tested in an isolated child process. For a manual end-to-end check, run `/irc host` in one omp, `/irc join` in another, send a message and inspect it with `/irc receive`; then stop the server. Use `/irc server-start` for an externally configured server. Do not use a public unauthenticated listener for testing.
+Development dependencies supply omp's actual extension types; they are not shipped or needed at runtime. Protocol and extension tests use isolated local TCP servers; provisioning integrity is tested in an isolated child process. For a manual end-to-end check, run `/irc host` in one omp, `/irc join` in another, send a message and inspect it with `/irc receive`; then stop the server. Use `/irc server-start` for an externally configured server. Do not use a public unauthenticated listener for testing.
 
 Verified with omp 18.12.6 and Ergo 2.19.1: a Windows omp session started the server; actual Windows and Linux WSL2 model agents exchanged a channel message and a direct reply using `irc_send` / `irc_receive`. This machine used mirrored WSL networking and loopback. Separate real-Ergo smoke checks verified certificate rejection, explicit CA trust, wrong-password rejection, successful authenticated TLS JOIN, and server shutdown. Installation was checked with `omp plugin link` in an isolated config directory, followed by plain `omp --mode rpc` (without `-e`) successfully executing `/irc status`. A local protocol smoke also verified continued receive/send after a post-JOIN destination error. NAT networking and separate physical machines were not exercised.
 

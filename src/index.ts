@@ -75,25 +75,40 @@ export default function ircExtension(pi: ExtensionAPI) {
     if (server.status().state === "running" || server.status().state === "starting") throw new Error("Already hosting. Use /irc server-stop before starting another host.");
     const port = params.port ?? 16667;
     const channel = params.channel ?? "#omp";
+    const local = { host: "127.0.0.1", port, nick: params.nick ?? defaultNick, channel, wake: params.wake };
+    const joinCommand = `/irc join ${JSON.stringify({ host: "127.0.0.1", port, channel })}`;
+    // Another session may already host this port: join it rather than fail binding a second Ergo.
+    try {
+      return {
+        hosted: false, client: await join(local, cwd), joinCommand,
+        note: "Joined the server already listening on this port. It belongs to another process and keeps running when this session ends.",
+      };
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ECONNREFUSED") throw error;
+    }
     const prepared = await prepareErgo({ port });
     await server.start(prepared);
     try {
-      await join({ host: "127.0.0.1", port, nick: params.nick ?? defaultNick, channel, wake: params.wake }, cwd);
+      await join(local, cwd);
     } catch (error) {
       await server.stop();
       throw error;
     }
     const running = server.status();
     return {
-      server: { state: running.state, pid: running.pid }, client: client.status(), directory: prepared.directory,
-      joinCommand: `/irc join ${JSON.stringify({ host: "127.0.0.1", port, channel })}`,
+      hosted: true, server: { state: running.state, pid: running.pid }, client: client.status(), directory: prepared.directory, joinCommand,
       note: "Loopback only. Run the join command in another local omp, or WSL2 with mirrored networking. Other machines require custom TLS configuration.",
     };
   }
   pi.registerTool({
-    name: "irc_host", label: "Host IRC", parameters: hostSchema,
-    description: "One-command local IRC hosting: download checksum-verified Ergo if needed, configure a loopback-only server, initialize storage, start it, and join this agent. No manual installation or config. Default port 16667 and channel #omp. Prints the second instance's join command. Requires internet on first use, Windows' built-in tar.exe or tar on PATH on Linux.",
+    name: "irc_host", label: "Host IRC", loadMode: "essential", parameters: hostSchema,
+    description: "One-command local IRC: join the server already listening on 127.0.0.1:<port>, or else download checksum-verified Ergo if needed, configure a loopback-only server, initialize storage, start it, and join this agent. No manual installation or config. Default port 16667 and channel #omp. `hosted` reports whether this session started the server. Returns the other instance's join command. Requires internet on first use, Windows' built-in tar.exe or tar on PATH on Linux.",
     async execute(_id, params, _signal, _update, ctx) { return result(await host(params, ctx.cwd)); },
+  });
+  pi.registerTool({
+    name: "irc_join", label: "IRC join", loadMode: "essential", parameters: joinSchema,
+    description: "Join an IRC server using local defaults: host 127.0.0.1, port 16667, channel #omp and a unique nickname. Any irc_connect option can be overridden. Fails if no server is listening; irc_host starts one.",
+    async execute(_id, params, _signal, _update, ctx) { return result(await join(params, ctx.cwd)); },
   });
   pi.registerTool({
     name: "irc_connect", label: "IRC connect", loadMode: "essential",
@@ -138,7 +153,7 @@ export default function ircExtension(pi: ExtensionAPI) {
     async execute() { wake = false; await client.disconnect(); notify?.(); return result(client.status()); },
   });
   pi.registerTool({
-    name: "irc_status", label: "IRC status", approval: "read", parameters: z.object({}),
+    name: "irc_status", label: "IRC status", loadMode: "essential", approval: "read", parameters: z.object({}),
     description: "Inspect this session's IRC connection, inbox and owned Ergo process; no secrets.",
     async execute() { return result({ client: client.status(), server: server.status(), pending: inbox.length, dropped, wake }); },
   });
@@ -162,7 +177,7 @@ export default function ircExtension(pi: ExtensionAPI) {
         let details: unknown;
         switch (action) {
           case "host":
-            pi.sendMessage({ customType: "irc-status", content: "Preparing local Ergo server. First use downloads and verifies the native release…", display: true });
+            pi.sendMessage({ customType: "irc-status", content: "Joining or starting the local Ergo server. First start downloads and verifies the native release…", display: true });
             details = await host(hostSchema.parse(JSON.parse(payload)), ctx.cwd); break;
           case "join": details = await join(
             payload.trim().startsWith("{") ? joinSchema.parse(JSON.parse(payload)) : { host: payload.trim() }, ctx.cwd,
