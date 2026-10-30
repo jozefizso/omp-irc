@@ -177,10 +177,29 @@ Do not assume a DNS nameserver address is the Windows host: DNS tunneling can ma
 | `irc_receive` | Drain the inbox; optional `waitMs` from 0–20000 waits for a message. |
 | `irc_status` | Connection, owned process state, pending inbox count, and overflow count; no connection password. |
 | `irc_disconnect` | Disconnect this client without stopping Ergo. |
+| `irc_send_file` | Send a local file to a peer over a direct TCP connection; `target`, `path`, optional `listen`, `host`, `port`, `timeoutMs`. Blocks until the peer verified size and SHA-256. |
+| `irc_accept_file` | Accept a pending offer (`id`, `directory`) and download it directly from the peer; optional `host`, `port`, `timeoutMs`. |
+| `irc_decline_file` | Decline a pending offer and tell the sender. |
 
-`irc_host`, `irc_join`, `irc_status`, `irc_connect`, `irc_send`, and `irc_receive` are always in the model's tool list; the remaining tools are discoverable (`xd://` when omp's `tools.xdev` is enabled). One connection and one owned server per extension/session. Inbox capacity: 200 messages, dropping oldest on overflow and reporting `dropped` when drained. Incoming messages also enter context; the inbox limit is not a session-history retention policy. Sending confirms a socket write, **not** peer receipt or execution. No offline replay, acknowledgement protocol, delivery guarantee, automatic reconnect, or SASL/account login is implemented. Reconnect explicitly after network loss. Use unique ASCII nicknames and ordinary `#channels` for Ergo's default identifier policy.
+`irc_host`, `irc_join`, `irc_status`, `irc_connect`, `irc_send`, `irc_receive`, `irc_send_file`, and `irc_accept_file` are always in the model's tool list; the remaining tools are discoverable (`xd://` when omp's `tools.xdev` is enabled). One connection and one owned server per extension/session. Inbox capacity: 200 messages, dropping oldest on overflow and reporting `dropped` when drained. Incoming messages also enter context; the inbox limit is not a session-history retention policy. Sending confirms a socket write, **not** peer receipt or execution. No offline replay, acknowledgement protocol, delivery guarantee, automatic reconnect, or SASL/account login is implemented. Reconnect explicitly after network loss. Use unique ASCII nicknames and ordinary `#channels` for Ergo's default identifier policy.
 
 After JOIN, numeric server errors (for example an unknown message destination) do not disconnect the client. `irc_status` exposes the latest as `client.lastServerError` until the next connection. Check this field when a socket write succeeded but the peer did not receive a message.
+
+## Send files between agents
+
+IRC cannot carry real files: Ergo throttles every connection, and chunking 300 KB through it took 154 s here. `irc_send_file` and `irc_accept_file` therefore open a **direct TCP connection** between the two machines and use IRC only for a short offer, in the spirit of DCC SEND. A 3 MiB file moved in about 0.1 s over loopback in the tests.
+
+1. The sender calls `irc_send_file {target, path}`. It hashes the file, listens on a free port of its IRC connection's local address, and sends the peer a direct message with the name, size, SHA-256, endpoint and a one-time token.
+2. The receiving agent sees `file offer id=… name=… size=… sha256=… mode=…` and, if the user expects the file, calls `irc_accept_file {id, directory}`. `irc_status.fileOffers` lists pending offers; `irc_decline_file` rejects one.
+3. The receiver connects, presents the token, and reads exactly `size` bytes. It verifies the SHA-256, then moves the file to its final name and replies `OK`. The sender's call returns only after that reply.
+
+**Which side listens.** By default the sender listens. If its firewall blocks inbound connections, call `irc_send_file` with `"listen": false`: the offer then carries no endpoint, the receiver listens when it accepts (optionally with `host` and `port`), and the sender connects out. The listening side needs inbound TCP permitted for its process and an address the peer can reach. The plugin never changes firewall rules.
+
+**Addresses.** The advertised address is the local address of the IRC connection, which is the interface the peer reached. When connected over loopback (`127.0.0.1`) that is useless to a peer on another machine, so pass `host` with one specific local IP address (for example the Hyper-V Default Switch address for a VM). Wildcard, hostname and multicast values are refused.
+
+**Safeguards.** Offers are accepted only from direct messages; a channel message with the control prefix is dropped. Names are reduced to `[A-Za-z0-9_.-]` (100 characters, no leading dot), files are written under the directory you give, an existing file is never overwritten, and the file appears under its final name only after size and hash match; a failed or partial transfer leaves nothing behind. A connection that does not present the token is dropped. Limits: 1 GiB per file, 16 pending offers, offers expire after 10 minutes, 120 s default wait. Accepting an offer makes this machine connect to the address in the offer, and the peer is untrusted, so the agent accepts only transfers the user expects. The connection is plain TCP without encryption: use it on a trusted local network, and remember that crash dumps and similar files contain process memory.
+
+**Verified:** automated tests exercise both modes, an empty file, a 3 MiB file, a wrong token, a hash mismatch, a truncated and an over-long stream, refusal to overwrite, decline, timeout, malformed offers, and the extension wiring through a fake IRC server. All of that runs over loopback. **Not verified:** transfers between two machines or through a firewall, and `irc_send_file` driven by two real model agents.
 
 ## Development
 

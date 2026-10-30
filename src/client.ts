@@ -179,6 +179,12 @@ export class IrcClient {
     return { connected: this.connected, connecting: this.connecting, joined: this.joined, channel: this.joined ? this.options?.channel : undefined, nick: this.options?.nick, ...(this.lastServerError ? { lastServerError: { ...this.lastServerError } } : {}) };
   }
 
+  /** Local address of the IRC connection, i.e. the interface the peer can reach us on. */
+  localAddress(): string | undefined { return this.socket?.localAddress; }
+
+  /** Our current nickname while connected. */
+  nickname(): string | undefined { return this.connected ? this.options?.nick : undefined; }
+
   private receive(data: Buffer): void {
     if (data.length === 0) return;
     if (this.buffer.length + data.length > MAX_READ_BUFFER) {
