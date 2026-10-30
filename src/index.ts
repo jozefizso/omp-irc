@@ -11,6 +11,7 @@ import { resolve } from "node:path";
 import { IrcClient, type IrcMessage } from "./client.ts";
 import { ErgoServer } from "./server.ts";
 import { prepareErgo } from "./setup.ts";
+import { FileTransfers } from "./transfer.ts";
 
 export default function ircExtension(pi: ExtensionAPI) {
   const z = pi.zod;
@@ -20,7 +21,7 @@ export default function ircExtension(pi: ExtensionAPI) {
   let wake = false;
   let shuttingDown = false;
   let notify: (() => void) | undefined;
-  const client = new IrcClient(message => {
+  const deliver = (message: IrcMessage) => {
     if (shuttingDown) return;
     if (inbox.length === 200) { inbox.shift(); dropped++; }
     inbox.push(message);
@@ -34,6 +35,19 @@ export default function ircExtension(pi: ExtensionAPI) {
       }, { deliverAs: "nextTurn", triggerTurn: wake });
     } catch (error) {
       pi.logger.warn("IRC message delivery failed", { error: String(error) });
+    }
+  };
+  const transfers = new FileTransfers({
+    send: (target, text) => client.send(target, text),
+    localAddress: () => client.localAddress(),
+  });
+  const client = new IrcClient(message => {
+    const own = client.nickname();
+    const control = transfers.handleControl(message.from, own !== undefined && message.target.toLowerCase() === own.toLowerCase(), message.text);
+    if (control.kind === "ignored") { deliver(message); return; }
+    if (control.kind === "offer") {
+      const { id, name, size, sha256, endpoint } = control.offer;
+      deliver({ ...message, text: `file offer id=${id} name=${name} size=${size} sha256=${sha256} mode=${endpoint ? "sender-listens" : "receiver-listens"}` });
     }
   });
   const result = (details: unknown) => ({
@@ -155,7 +169,42 @@ export default function ircExtension(pi: ExtensionAPI) {
   pi.registerTool({
     name: "irc_status", label: "IRC status", loadMode: "essential", approval: "read", parameters: z.object({}),
     description: "Inspect this session's IRC connection, inbox and owned Ergo process; no secrets.",
-    async execute() { return result({ client: client.status(), server: server.status(), pending: inbox.length, dropped, wake }); },
+    async execute() { return result({ client: client.status(), server: server.status(), pending: inbox.length, dropped, wake, fileOffers: transfers.pending() }); },
+  });
+  const sendFileSchema = z.object({
+    target: z.string().describe("Nickname of the receiving peer."),
+    path: z.string().describe("File to send, relative to the working directory."),
+    listen: z.boolean().optional().describe("true (default): this side listens and the peer connects. false: the peer listens and this side connects; use it when this machine's firewall blocks inbound connections."),
+    host: z.string().optional().describe("One specific local IP address to listen on and advertise. Defaults to the local address of the IRC connection, which is wrong when connected over loopback."),
+    port: z.number().int().min(1).max(65535).optional().describe("Listen port. Default: any free port."),
+    timeoutMs: z.number().int().min(1000).max(3_600_000).optional().describe("How long to wait for the peer. Default 120000."),
+  });
+  pi.registerTool({
+    name: "irc_send_file", label: "IRC send file", loadMode: "essential", parameters: sendFileSchema,
+    description: "Send a local file to an IRC peer over a direct TCP connection (IRC carries only the offer; use this instead of chunking data through IRC, which is throttled to a few KB/s). Blocks until the peer accepted, the bytes arrived and the peer verified size and SHA-256. The peer must call irc_accept_file. The listening side needs inbound TCP allowed by its firewall; the peer must be able to reach the advertised address. Files up to 1 GiB.",
+    async execute(_id, params, signal, _update, ctx) {
+      return result(await transfers.send(params.target, resolve(ctx.cwd, params.path), { listen: params.listen, host: params.host, port: params.port, timeoutMs: params.timeoutMs, signal }));
+    },
+  });
+  const acceptFileSchema = z.object({
+    id: z.string().describe("Offer id from the file offer message or irc_status.fileOffers."),
+    directory: z.string().describe("Directory to save into, relative to the working directory. The file keeps the offered (sanitized) name and never overwrites an existing file."),
+    host: z.string().optional().describe("Reverse mode only (offers with mode=receiver-listens): local IP address to listen on and advertise. Defaults to the local address of the IRC connection."),
+    port: z.number().int().min(1).max(65535).optional(),
+    timeoutMs: z.number().int().min(1000).max(3_600_000).optional().describe("How long to wait for the transfer to start. Default 120000."),
+  });
+  pi.registerTool({
+    name: "irc_accept_file", label: "IRC accept file", loadMode: "essential", parameters: acceptFileSchema,
+    description: "Accept a pending file offer and download it directly from the peer. Only accept offers the user expects: the peer is untrusted, and mode=sender-listens makes this machine connect to the address in the offer. Verifies size and SHA-256 before the file appears under its final name.",
+    async execute(_id, params, signal, _update, ctx) {
+      return result(await transfers.accept(params.id, resolve(ctx.cwd, params.directory), { host: params.host, port: params.port, timeoutMs: params.timeoutMs, signal }));
+    },
+  });
+  const declineFileSchema = z.object({ id: z.string() });
+  pi.registerTool({
+    name: "irc_decline_file", label: "IRC decline file", parameters: declineFileSchema,
+    description: "Decline a pending file offer and tell the sender.",
+    async execute(_id, params) { await transfers.decline(params.id); return result({ declined: params.id }); },
   });
   pi.registerTool({
     name: "irc_server_start", label: "Start Ergo", parameters: startSchema,
